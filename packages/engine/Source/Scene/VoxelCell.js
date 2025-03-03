@@ -71,8 +71,8 @@ VoxelCell.fromKeyframeNode = function (
   //>>includeEnd('debug');
 
   const voxelCell = new VoxelCell(primitive, tileIndex, sampleIndex);
-  const { spatialNode, content } = keyframeNode;
-  voxelCell._metadata = getMetadataForSample(primitive, content, sampleIndex);
+  const { spatialNode, metadata } = keyframeNode;
+  voxelCell._metadata = getMetadataForSample(primitive, metadata, sampleIndex);
   voxelCell._orientedBoundingBox = getOrientedBoundingBox(
     primitive,
     spatialNode,
@@ -85,16 +85,15 @@ VoxelCell.fromKeyframeNode = function (
 /**
  * @private
  * @param {VoxelPrimitive} primitive
- * @param {VoxelContent} content
+ * @param {object} metadata
  * @param {number} sampleIndex
  * @returns {object}
  */
-function getMetadataForSample(primitive, content, sampleIndex) {
-  if (!defined(content) || !defined(content.metadata)) {
+function getMetadataForSample(primitive, metadata, sampleIndex) {
+  if (!defined(metadata)) {
     return undefined;
   }
   const { names, types } = primitive.provider;
-  const { metadata } = content;
   const metadataMap = {};
   for (let i = 0; i < names.length; i++) {
     const name = names[i];

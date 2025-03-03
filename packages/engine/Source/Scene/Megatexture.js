@@ -21,11 +21,11 @@ import TextureWrap from "../Renderer/TextureWrap.js";
  * @alias Megatexture
  * @constructor
  *
- * @param {Context} context The context in which to create GPU resources.
- * @param {Cartesian3} dimensions The number of voxels in each dimension of the tile.
- * @param {number} channelCount The number of channels in the metadata.
- * @param {MetadataComponentType} componentType The component type of the metadata.
- * @param {number} [availableTextureMemoryBytes=134217728] An upper limit on the texture memory size in bytes.
+ * @param {Context} context
+ * @param {Cartesian3} dimensions
+ * @param {number} channelCount
+ * @param {MetadataComponentType} componentType
+ * @param {number} [textureMemoryByteLength]
  *
  * @private
  */
@@ -34,35 +34,59 @@ function Megatexture(
   dimensions,
   channelCount,
   componentType,
-  availableTextureMemoryBytes,
+  textureMemoryByteLength,
 ) {
-  const maximumTextureMemoryByteLength = 512 * 1024 * 1024;
-  availableTextureMemoryBytes = Math.min(
-    defaultValue(availableTextureMemoryBytes, 128 * 1024 * 1024),
-    maximumTextureMemoryByteLength,
-  );
-
   // TODO there are a lot of texture packing rules, see https://github.com/CesiumGS/cesium/issues/9572
   // Unsigned short textures not allowed in webgl 1, so treat as float
   if (componentType === MetadataComponentType.UNSIGNED_SHORT) {
     componentType = MetadataComponentType.FLOAT32;
   }
 
+  const supportsFloatingPointTexture = context.floatingPointTexture;
   if (
     componentType === MetadataComponentType.FLOAT32 &&
-    !context.floatingPointTexture
+    !supportsFloatingPointTexture
   ) {
     throw new RuntimeError("Floating point texture not supported");
   }
 
-  const pixelDataType = getPixelDataType(componentType);
-  const pixelFormat = getPixelFormat(channelCount, context.webgl2);
+  // TODO support more
+  let pixelType;
+  if (
+    componentType === MetadataComponentType.FLOAT32 ||
+    componentType === MetadataComponentType.FLOAT64
+  ) {
+    pixelType = PixelDatatype.FLOAT;
+  } else if (componentType === MetadataComponentType.UINT8) {
+    pixelType = PixelDatatype.UNSIGNED_BYTE;
+  }
+
+  let pixelFormat;
+  if (channelCount === 1) {
+    pixelFormat = context.webgl2 ? PixelFormat.RED : PixelFormat.LUMINANCE;
+  } else if (channelCount === 2) {
+    pixelFormat = context.webgl2 ? PixelFormat.RG : PixelFormat.LUMINANCE_ALPHA;
+  } else if (channelCount === 3) {
+    pixelFormat = PixelFormat.RGB;
+  } else if (channelCount === 4) {
+    pixelFormat = PixelFormat.RGBA;
+  }
+
+  const maximumTextureMemoryByteLength = 512 * 1024 * 1024;
+  const defaultTextureMemoryByteLength = 128 * 1024 * 1024;
+  textureMemoryByteLength = Math.min(
+    defaultValue(textureMemoryByteLength, defaultTextureMemoryByteLength),
+    maximumTextureMemoryByteLength,
+  );
+  const maximumTextureDimensionContext = ContextLimits.maximumTextureSize;
   const componentTypeByteLength =
     MetadataComponentType.getSizeInBytes(componentType);
-  const textureDimension = getTextureDimension(
-    availableTextureMemoryBytes,
-    channelCount,
-    componentTypeByteLength,
+  const texelCount = Math.floor(
+    textureMemoryByteLength / (channelCount * componentTypeByteLength),
+  );
+  const textureDimension = Math.min(
+    maximumTextureDimensionContext,
+    CesiumMath.previousPowerOfTwo(Math.floor(Math.sqrt(texelCount))),
   );
 
   const sliceCountPerRegionX = Math.ceil(Math.sqrt(dimensions.x));
@@ -91,13 +115,6 @@ function Megatexture(
    * @readonly
    */
   this.componentType = componentType;
-
-  /**
-   * @type {number}
-   * @readonly
-   */
-  this.textureMemoryByteLength =
-    componentTypeByteLength * channelCount * textureDimension ** 2;
 
   /**
    * @type {Cartesian3}
@@ -173,7 +190,7 @@ function Megatexture(
   this.texture = new Texture({
     context: context,
     pixelFormat: pixelFormat,
-    pixelDatatype: pixelDataType,
+    pixelDatatype: pixelType,
     flipY: false,
     width: textureDimension,
     height: textureDimension,
@@ -233,73 +250,6 @@ function Megatexture(
 }
 
 /**
- * Get the pixel data type to use in a megatexture.
- * TODO support more
- *
- * @param {MetadataComponentType} componentType The component type of the metadata.
- * @returns {PixelDatatype} The pixel datatype to use for a megatexture.
- *
- * @private
- */
-function getPixelDataType(componentType) {
-  if (
-    componentType === MetadataComponentType.FLOAT32 ||
-    componentType === MetadataComponentType.FLOAT64
-  ) {
-    return PixelDatatype.FLOAT;
-  } else if (componentType === MetadataComponentType.UINT8) {
-    return PixelDatatype.UNSIGNED_BYTE;
-  }
-}
-
-/**
- * Get the pixel format to use for a megatexture.
- *
- * @param {number} channelCount The number of channels in the metadata. Must be 1 to 4.
- * @param {boolean} webgl2 true if the context is using webgl2
- * @returns {PixelFormat} The pixel format to use for a megatexture.
- *
- * @private
- */
-function getPixelFormat(channelCount, webgl2) {
-  if (channelCount === 1) {
-    return webgl2 ? PixelFormat.RED : PixelFormat.LUMINANCE;
-  } else if (channelCount === 2) {
-    return webgl2 ? PixelFormat.RG : PixelFormat.LUMINANCE_ALPHA;
-  } else if (channelCount === 3) {
-    return PixelFormat.RGB;
-  } else if (channelCount === 4) {
-    return PixelFormat.RGBA;
-  }
-}
-
-/**
- * Compute the largest size of a square texture that will fit in the available memory.
- *
- * @param {number} availableTextureMemoryBytes An upper limit on the texture memory size.
- * @param {number} channelCount The number of metadata channels per texel.
- * @param {number} componentByteLength The byte length of each component of the metadata.
- * @returns {number} The dimension of the square texture to use for the megatexture.
- *
- * @private
- */
-function getTextureDimension(
-  availableTextureMemoryBytes,
-  channelCount,
-  componentByteLength,
-) {
-  // Compute how many texels will fit in the available memory
-  const texelCount = Math.floor(
-    availableTextureMemoryBytes / (channelCount * componentByteLength),
-  );
-  // Return the largest power of two texture size that will fit in memory
-  return Math.min(
-    ContextLimits.maximumTextureSize,
-    CesiumMath.previousPowerOfTwo(Math.floor(Math.sqrt(texelCount))),
-  );
-}
-
-/**
  * @alias MegatextureNode
  * @constructor
  *
@@ -325,9 +275,8 @@ function MegatextureNode(index) {
 }
 
 /**
- * Add an array of tile metadata to the megatexture.
- * @param {Array} data The data to be added.
- * @returns {number} The index of the tile's location in the megatexture.
+ * @param {Array} data
+ * @returns {number}
  */
 Megatexture.prototype.add = function (data) {
   if (this.isFull()) {
@@ -390,10 +339,10 @@ Megatexture.prototype.isFull = function () {
 };
 
 /**
- * @param {number} tileCount The total number of tiles in the tileset.
- * @param {Cartesian3} dimensions The number of voxels in each dimension of the tile.
- * @param {number} channelCount The number of channels in the metadata.
- * @param {MetadataComponentType} componentType The type of one channel of the metadata.
+ * @param {number} tileCount
+ * @param {Cartesian3} dimensions
+ * @param {number} channelCount number of channels in the metadata. Must be 1 to 4.
+ * @param {MetadataComponentType} componentType
  * @returns {number}
  */
 Megatexture.getApproximateTextureMemoryByteLength = function (
@@ -441,52 +390,55 @@ Megatexture.getApproximateTextureMemoryByteLength = function (
 };
 
 /**
- * Write an array of tile metadata to the megatexture.
- * @param {number} index The index of the tile's location in the megatexture.
- * @param {Float32Array|Uint16Array|Uint8Array} data The data to be written.
+ * @param {number} index
+ * @param {Float32Array|Uint16Array|Uint8Array} data
  */
 Megatexture.prototype.writeDataToTexture = function (index, data) {
   // Unsigned short textures not allowed in webgl 1, so treat as float
   const tileData =
     data.constructor === Uint16Array ? new Float32Array(data) : data;
 
-  const {
-    tileVoxelDataTemp,
-    voxelCountPerTile,
-    sliceCountPerRegion,
-    voxelCountPerRegion,
-    channelCount,
-    regionCountPerMegatexture,
-  } = this;
+  const voxelDimensionsPerTile = this.voxelCountPerTile;
+  const sliceDimensionsPerRegion = this.sliceCountPerRegion;
+  const voxelDimensionsPerRegion = this.voxelCountPerRegion;
+  const channelCount = this.channelCount;
 
-  for (let z = 0; z < voxelCountPerTile.z; z++) {
-    const sliceVoxelOffsetX = (z % sliceCountPerRegion.x) * voxelCountPerTile.x;
+  const tileVoxelData = this.tileVoxelDataTemp;
+  for (let z = 0; z < voxelDimensionsPerTile.z; z++) {
+    const sliceVoxelOffsetX =
+      (z % sliceDimensionsPerRegion.x) * voxelDimensionsPerTile.x;
     const sliceVoxelOffsetY =
-      Math.floor(z / sliceCountPerRegion.x) * voxelCountPerTile.y;
-    for (let y = 0; y < voxelCountPerTile.y; y++) {
-      const readOffset = getReadOffset(voxelCountPerTile, y, z);
-      const writeOffset =
-        (sliceVoxelOffsetY + y) * voxelCountPerRegion.x + sliceVoxelOffsetX;
-      for (let x = 0; x < voxelCountPerTile.x; x++) {
-        const readIndex = readOffset + x;
-        const writeIndex = writeOffset + x;
+      Math.floor(z / sliceDimensionsPerRegion.x) * voxelDimensionsPerTile.y;
+    for (let y = 0; y < voxelDimensionsPerTile.y; y++) {
+      for (let x = 0; x < voxelDimensionsPerTile.x; x++) {
+        const readIndex =
+          z * voxelDimensionsPerTile.y * voxelDimensionsPerTile.x +
+          y * voxelDimensionsPerTile.x +
+          x;
+        const writeIndex =
+          (sliceVoxelOffsetY + y) * voxelDimensionsPerRegion.x +
+          (sliceVoxelOffsetX + x);
         for (let c = 0; c < channelCount; c++) {
-          tileVoxelDataTemp[writeIndex * channelCount + c] =
+          tileVoxelData[writeIndex * channelCount + c] =
             tileData[readIndex * channelCount + c];
         }
       }
     }
   }
 
+  const regionDimensionsPerMegatexture = this.regionCountPerMegatexture;
+  const voxelWidth = voxelDimensionsPerRegion.x;
+  const voxelHeight = voxelDimensionsPerRegion.y;
   const voxelOffsetX =
-    (index % regionCountPerMegatexture.x) * voxelCountPerRegion.x;
+    (index % regionDimensionsPerMegatexture.x) * voxelDimensionsPerRegion.x;
   const voxelOffsetY =
-    Math.floor(index / regionCountPerMegatexture.x) * voxelCountPerRegion.y;
+    Math.floor(index / regionDimensionsPerMegatexture.x) *
+    voxelDimensionsPerRegion.y;
 
   const source = {
-    arrayBufferView: tileVoxelDataTemp,
-    width: voxelCountPerRegion.x,
-    height: voxelCountPerRegion.y,
+    arrayBufferView: tileVoxelData,
+    width: voxelWidth,
+    height: voxelHeight,
   };
 
   const copyOptions = {
@@ -497,22 +449,6 @@ Megatexture.prototype.writeDataToTexture = function (index, data) {
 
   this.texture.copyFrom(copyOptions);
 };
-
-/**
- * Get the offset into the data array for a given row of contiguous voxel data.
- *
- * @param {Cartesian3} dimensions The number of voxels in each dimension of the tile.
- * @param {number} y The y index of the voxel row
- * @param {number} z The z index of the voxel row
- * @returns {number} The offset into the data array
- * @private
- */
-function getReadOffset(dimensions, y, z) {
-  const voxelsPerInputSlice = dimensions.y * dimensions.x;
-  const sliceIndex = z;
-  const rowIndex = y;
-  return sliceIndex * voxelsPerInputSlice + rowIndex * dimensions.x;
-}
 
 /**
  * Returns true if this object was destroyed; otherwise, false.

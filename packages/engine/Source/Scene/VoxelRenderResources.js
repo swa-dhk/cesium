@@ -19,7 +19,6 @@ import convertUvToCylinder from "../Shaders/Voxels/convertUvToCylinder.js";
 import convertUvToEllipsoid from "../Shaders/Voxels/convertUvToEllipsoid.js";
 import Octree from "../Shaders/Voxels/Octree.js";
 import Megatexture from "../Shaders/Voxels/Megatexture.js";
-import VoxelMetadataOrder from "./VoxelMetadataOrder.js";
 
 /**
  * Set up render resources, including basic shader code, for rendering
@@ -70,7 +69,7 @@ function VoxelRenderResources(primitive) {
   /**
    * A dictionary mapping uniform name to functions that return the uniform
    * values.
-   * @private
+   *
    * @type {Object<string, Function>}
    */
   this.uniformMap = uniformMap;
@@ -86,34 +85,6 @@ function VoxelRenderResources(primitive) {
 
   // Build shader
   shaderBuilder.addVertexLines([VoxelVS]);
-
-  const shapeType = primitive._provider.shape;
-  if (primitive.provider.metadataOrder === VoxelMetadataOrder.GLTF) {
-    shaderBuilder.addDefine(
-      "GLTF_METADATA_ORDER",
-      undefined,
-      ShaderDestination.FRAGMENT,
-    );
-    if (shapeType === "BOX") {
-      shaderBuilder.addDefine(
-        "SHAPE_BOX",
-        undefined,
-        ShaderDestination.FRAGMENT,
-      );
-    } else if (shapeType === "CYLINDER") {
-      shaderBuilder.addDefine(
-        "SHAPE_CYLINDER",
-        undefined,
-        ShaderDestination.FRAGMENT,
-      );
-    } else if (shapeType === "ELLIPSOID") {
-      shaderBuilder.addDefine(
-        "SHAPE_ELLIPSOID",
-        undefined,
-        ShaderDestination.FRAGMENT,
-      );
-    }
-  }
 
   shaderBuilder.addFragmentLines([
     customShader.fragmentShaderText,
@@ -153,6 +124,7 @@ function VoxelRenderResources(primitive) {
     shaderBuilder.addFragmentLines([IntersectDepth]);
   }
 
+  const shapeType = primitive._provider.shape;
   if (shapeType === "BOX") {
     shaderBuilder.addFragmentLines([
       convertUvToBox,
@@ -167,6 +139,11 @@ function VoxelRenderResources(primitive) {
       Intersection,
     ]);
   } else if (shapeType === "ELLIPSOID") {
+    shaderBuilder.addDefine(
+      "SHAPE_ELLIPSOID",
+      undefined,
+      ShaderDestination.FRAGMENT,
+    );
     shaderBuilder.addFragmentLines([
       convertUvToEllipsoid,
       IntersectLongitude,

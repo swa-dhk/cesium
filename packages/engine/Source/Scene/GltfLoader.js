@@ -2191,14 +2191,16 @@ function loadPrimitiveMetadata(primitive, structuralMetadataExtension) {
   if (!defined(structuralMetadataExtension)) {
     return;
   }
-  const { propertyTextures, propertyAttributes } = structuralMetadataExtension;
 
-  if (defined(propertyTextures)) {
-    primitive.propertyTextureIds = propertyTextures;
+  // Property Textures
+  if (defined(structuralMetadataExtension.propertyTextures)) {
+    primitive.propertyTextureIds = structuralMetadataExtension.propertyTextures;
   }
 
-  if (defined(propertyAttributes)) {
-    primitive.propertyAttributeIds = propertyAttributes;
+  // Property Attributes
+  if (defined(structuralMetadataExtension.propertyAttributes)) {
+    primitive.propertyAttributeIds =
+      structuralMetadataExtension.propertyAttributes;
   }
 }
 

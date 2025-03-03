@@ -610,25 +610,6 @@ Object.defineProperties(EntityCluster.prototype, {
       this._clusterPoints = value;
     },
   },
-
-  /**
-   * Returns true when all clustered data has been rendered.
-   * @memberof EntityCluster.prototype
-   * @type {boolean}
-   * @readonly
-   * @private
-   */
-  ready: {
-    get: function () {
-      return (
-        !this._enabledDirty &&
-        !this._clusterDirty &&
-        (!defined(this._billboardCollection) ||
-          this._billboardCollection.ready) &&
-        (!defined(this._labelCollection) || this._labelCollection.ready)
-      );
-    },
-  },
 });
 
 function createGetEntity(
@@ -885,30 +866,28 @@ EntityCluster.prototype.update = function (frameState) {
   // the glyphs haven't been created so the screen space bounding boxes
   // are incorrect.
   let commandList;
-  const labelCollection = this._labelCollection;
   if (
-    defined(labelCollection) &&
-    labelCollection.length > 0 &&
-    !labelCollection.ready
+    defined(this._labelCollection) &&
+    this._labelCollection.length > 0 &&
+    this._labelCollection.get(0)._glyphs.length === 0
   ) {
     commandList = frameState.commandList;
     frameState.commandList = [];
-    labelCollection.update(frameState);
+    this._labelCollection.update(frameState);
     frameState.commandList = commandList;
   }
 
-  // If clustering is enabled before the billboard collections are updated,
+  // If clustering is enabled before the billboard collection is updated,
   // the images haven't been added to the image atlas so the screen space bounding boxes
   // are incorrect.
-  const billboardCollection = this._billboardCollection;
   if (
-    defined(billboardCollection) &&
-    billboardCollection.length > 0 &&
-    !billboardCollection.ready
+    defined(this._billboardCollection) &&
+    this._billboardCollection.length > 0 &&
+    !defined(this._billboardCollection.get(0).width)
   ) {
     commandList = frameState.commandList;
     frameState.commandList = [];
-    billboardCollection.update(frameState);
+    this._billboardCollection.update(frameState);
     frameState.commandList = commandList;
   }
 
@@ -919,12 +898,8 @@ EntityCluster.prototype.update = function (frameState) {
   }
 
   if (this._clusterDirty) {
+    this._clusterDirty = false;
     this._cluster();
-
-    // Unless all existing billboards and labels were clustered, clustering will need to execute again next frame
-    this._clusterDirty =
-      (defined(labelCollection) && !labelCollection.ready) ||
-      (defined(billboardCollection) && !billboardCollection.ready);
   }
 
   if (defined(this._clusterLabelCollection)) {
@@ -937,11 +912,11 @@ EntityCluster.prototype.update = function (frameState) {
     this._clusterPointCollection.update(frameState);
   }
 
-  if (defined(labelCollection)) {
-    labelCollection.update(frameState);
+  if (defined(this._labelCollection)) {
+    this._labelCollection.update(frameState);
   }
-  if (defined(billboardCollection)) {
-    billboardCollection.update(frameState);
+  if (defined(this._billboardCollection)) {
+    this._billboardCollection.update(frameState);
   }
   if (defined(this._pointCollection)) {
     this._pointCollection.update(frameState);
@@ -957,11 +932,6 @@ EntityCluster.prototype.update = function (frameState) {
  * </p>
  */
 EntityCluster.prototype.destroy = function () {
-  if (defined(this._removeEventListener)) {
-    this._removeEventListener();
-    this._removeEventListener = undefined;
-  }
-
   this._labelCollection =
     this._labelCollection && this._labelCollection.destroy();
   this._billboardCollection =
@@ -976,6 +946,11 @@ EntityCluster.prototype.destroy = function () {
     this._clusterBillboardCollection.destroy();
   this._clusterPointCollection =
     this._clusterPointCollection && this._clusterPointCollection.destroy();
+
+  if (defined(this._removeEventListener)) {
+    this._removeEventListener();
+    this._removeEventListener = undefined;
+  }
 
   this._labelCollection = undefined;
   this._billboardCollection = undefined;

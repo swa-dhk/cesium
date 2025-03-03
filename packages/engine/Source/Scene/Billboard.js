@@ -14,7 +14,6 @@ import Ellipsoid from "../Core/Ellipsoid.js";
 import Matrix4 from "../Core/Matrix4.js";
 import NearFarScalar from "../Core/NearFarScalar.js";
 import Resource from "../Core/Resource.js";
-import BillboardTexture from "./BillboardTexture.js";
 import HeightReference, {
   isHeightReferenceRelative,
 } from "./HeightReference.js";
@@ -195,17 +194,20 @@ function Billboard(options, billboardCollection) {
   this._distanceDisplayCondition = distanceDisplayCondition;
   this._disableDepthTestDistance = options.disableDepthTestDistance;
   this._id = options.id;
-  this._collection = defaultValue(options.collection, billboardCollection); // Used only for pick ids
+  this._collection = defaultValue(options.collection, billboardCollection);
 
   this._pickId = undefined;
   this._pickPrimitive = defaultValue(options._pickPrimitive, this);
-
   this._billboardCollection = billboardCollection;
   this._dirty = false;
-  this._index = -1; // Used only by BillboardCollection
+  this._index = -1; //Used only by BillboardCollection
   this._batchIndex = undefined; // Used only by Vector3DTilePoints and BillboardCollection
 
-  this._imageTexture = new BillboardTexture(billboardCollection);
+  this._imageIndex = -1;
+  this._imageIndexPromise = undefined;
+  this._imageId = undefined;
+  this._image = undefined;
+  this._imageSubRegion = undefined;
   this._imageWidth = undefined;
   this._imageHeight = undefined;
 
@@ -226,11 +228,17 @@ function Billboard(options, billboardCollection) {
       }
     }
 
-    this._imageTexture.loadImage(imageId, image);
+    this._imageId = imageId;
+    this._image = image;
   }
 
   if (defined(options.imageSubRegion)) {
-    this._imageTexture.addImageSubRegion(imageId, options.imageSubRegion);
+    this._imageId = imageId;
+    this._imageSubRegion = options.imageSubRegion;
+  }
+
+  if (defined(this._billboardCollection._textureAtlas)) {
+    this._loadImage();
   }
 
   this._actualClampedPosition = undefined;
@@ -767,19 +775,18 @@ Object.defineProperties(Billboard.prototype, {
   /**
    * Gets or sets a width for the billboard. If undefined, the image width will be used.
    * @memberof Billboard.prototype
-   * @type {number|undefined}
+   * @type {number}
    */
   width: {
     get: function () {
-      return defaultValue(this._width, this._imageTexture.width);
+      return defaultValue(this._width, this._imageWidth);
     },
     set: function (value) {
       //>>includeStart('debug', pragmas.debug);
       if (defined(value)) {
-        Check.typeOf.number("width", value);
+        Check.typeOf.number("value", value);
       }
       //>>includeEnd('debug');
-
       if (this._width !== value) {
         this._width = value;
         makeDirty(this, IMAGE_INDEX_INDEX);
@@ -790,19 +797,18 @@ Object.defineProperties(Billboard.prototype, {
   /**
    * Gets or sets a height for the billboard. If undefined, the image height will be used.
    * @memberof Billboard.prototype
-   * @type {number|undefined}
+   * @type {number}
    */
   height: {
     get: function () {
-      return defaultValue(this._height, this._imageTexture.height);
+      return defaultValue(this._height, this._imageHeight);
     },
     set: function (value) {
       //>>includeStart('debug', pragmas.debug);
       if (defined(value)) {
-        Check.typeOf.number("height", value);
+        Check.typeOf.number("value", value);
       }
       //>>includeEnd('debug');
-
       if (this._height !== value) {
         this._height = value;
         makeDirty(this, IMAGE_INDEX_INDEX);
@@ -958,69 +964,42 @@ Object.defineProperties(Billboard.prototype, {
    */
   image: {
     get: function () {
-      return this._imageTexture.id;
+      return this._imageId;
     },
     set: function (value) {
       if (!defined(value)) {
-        this._imageTexture.unload();
-        return;
-      }
-
-      let id;
-      if (typeof value === "string") {
-        id = value;
+        this._imageIndex = -1;
+        this._imageSubRegion = undefined;
+        this._imageId = undefined;
+        this._image = undefined;
+        this._imageIndexPromise = undefined;
+        makeDirty(this, IMAGE_INDEX_INDEX);
+      } else if (typeof value === "string") {
+        this.setImage(value, value);
       } else if (value instanceof Resource) {
-        id = value._url;
+        this.setImage(value.url, value);
       } else if (defined(value.src)) {
-        id = value.src;
+        this.setImage(value.src, value);
       } else {
-        id = createGuid();
+        this.setImage(createGuid(), value);
       }
-
-      this._imageTexture.loadImage(id, value);
     },
   },
 
   /**
    * When <code>true</code>, this billboard is ready to render, i.e., the image
    * has been downloaded and the WebGL resources are created.
+   *
    * @memberof Billboard.prototype
+   *
    * @type {boolean}
    * @readonly
+   *
    * @default false
    */
   ready: {
     get: function () {
-      return this._imageTexture.ready;
-    },
-  },
-
-  /**
-   * If defined, this error was encountered during the loading process.
-   * @memberof Billboard.prototype
-   * @type {Error|undefined}
-   * @readonly
-   * @private
-   */
-  loadError: {
-    get: function () {
-      return this._imageTexture.loadError;
-    },
-  },
-
-  /**
-   * Used by <code>billboardCollection</code> to track which billboards to update based on image load status.
-   * @memberof Billboard.prototype
-   * @type {boolean}
-   * @private
-   * @default false
-   */
-  textureDirty: {
-    get: function () {
-      return this._imageTexture.dirty;
-    },
-    set: function (value) {
-      this._imageTexture.dirty = value;
+      return this._imageIndex !== -1;
     },
   },
 
@@ -1141,7 +1120,8 @@ Billboard.prototype._updateClamping = function () {
 
 const scratchCartographic = new Cartographic();
 Billboard._updateClamping = function (collection, owner) {
-  if (!defined(collection) || !defined(collection._scene)) {
+  const scene = collection._scene;
+  if (!defined(scene)) {
     //>>includeStart('debug', pragmas.debug);
     if (owner._heightReference !== HeightReference.NONE) {
       throw new DeveloperError(
@@ -1151,10 +1131,11 @@ Billboard._updateClamping = function (collection, owner) {
     //>>includeEnd('debug');
     return;
   }
-  const scene = collection._scene;
+
   const ellipsoid = defaultValue(scene.ellipsoid, Ellipsoid.default);
 
   const mode = scene.frameState.mode;
+
   const modeChanged = mode !== owner._mode;
   owner._mode = mode;
 
@@ -1220,14 +1201,68 @@ Billboard._updateClamping = function (collection, owner) {
   updateFunction(scratchCartographic);
 };
 
-/**
- * Get the texture coordinates for reading the loaded texture in shaders.
- * @param {BoundingRectangle} [result] The modified result parameter or a new BoundingRectangle instance if one was not provided.
- * @return {BoundingRectangle} The modified result parameter or a new BoundingRectangle instance if one was not provided.
- * @private
- */
-Billboard.prototype.computeTextureCoordinates = function (result) {
-  return this._imageTexture.computeTextureCoordinates(result);
+Billboard.prototype._loadImage = function () {
+  const atlas = this._billboardCollection._textureAtlas;
+
+  const imageId = this._imageId;
+  const image = this._image;
+  const imageSubRegion = this._imageSubRegion;
+  let imageIndexPromise;
+
+  const that = this;
+  function completeImageLoad(index) {
+    if (
+      that._imageId !== imageId ||
+      that._image !== image ||
+      !BoundingRectangle.equals(that._imageSubRegion, imageSubRegion)
+    ) {
+      // another load occurred before this one finished, ignore the index
+      return;
+    }
+
+    // fill in imageWidth and imageHeight
+    const textureCoordinates = atlas.textureCoordinates[index];
+    that._imageWidth = atlas.texture.width * textureCoordinates.width;
+    that._imageHeight = atlas.texture.height * textureCoordinates.height;
+
+    that._imageIndex = index;
+    that._ready = true;
+    that._image = undefined;
+    that._imageIndexPromise = undefined;
+    makeDirty(that, IMAGE_INDEX_INDEX);
+
+    const scene = that._billboardCollection._scene;
+    if (!defined(scene)) {
+      return;
+    }
+    // Request a new render in request render mode
+    scene.frameState.afterRender.push(() => true);
+  }
+
+  if (defined(image)) {
+    imageIndexPromise = atlas.addImage(imageId, image);
+  }
+  if (defined(imageSubRegion)) {
+    imageIndexPromise = atlas.addSubRegion(imageId, imageSubRegion);
+  }
+
+  this._imageIndexPromise = imageIndexPromise;
+
+  if (!defined(imageIndexPromise)) {
+    return;
+  }
+
+  // If the promise has already successfully resolved, we can return immediately without waiting a frame
+  const index = atlas.getImageIndex(imageId);
+  if (defined(index) && !defined(imageSubRegion)) {
+    completeImageLoad(index);
+    return;
+  }
+
+  imageIndexPromise.then(completeImageLoad).catch(function (error) {
+    console.error(`Error loading image for billboard: ${error}`);
+    that._imageIndexPromise = undefined;
+  });
 };
 
 /**
@@ -1266,24 +1301,26 @@ Billboard.prototype.computeTextureCoordinates = function (result) {
  */
 Billboard.prototype.setImage = function (id, image) {
   //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.string("id", id);
-  Check.defined("image", image);
+  if (!defined(id)) {
+    throw new DeveloperError("id is required.");
+  }
+  if (!defined(image)) {
+    throw new DeveloperError("image is required.");
+  }
   //>>includeEnd('debug');
 
-  this._imageTexture.loadImage(id, image);
-};
+  if (this._imageId === id) {
+    return;
+  }
 
-/**
- * Copy the values of an existing billboard texture into this one. Useful for prevent downtime for images that have already been loaded.
- * @private
- * @param {BillboardTexture} billboardTexture
- */
-Billboard.prototype.setImageTexture = function (billboardTexture) {
-  //>>includeStart('debug', pragmas.debug);
-  Check.defined("billboardTexture", billboardTexture);
-  //>>includeEnd('debug');
+  this._imageIndex = -1;
+  this._imageSubRegion = undefined;
+  this._imageId = id;
+  this._image = image;
 
-  BillboardTexture.clone(billboardTexture, this._imageTexture);
+  if (defined(this._billboardCollection._textureAtlas)) {
+    this._loadImage();
+  }
 };
 
 /**
@@ -1297,11 +1334,28 @@ Billboard.prototype.setImageTexture = function (billboardTexture) {
  */
 Billboard.prototype.setImageSubRegion = function (id, subRegion) {
   //>>includeStart('debug', pragmas.debug);
-  Check.typeOf.string("id", id);
-  Check.defined("subRegion", subRegion);
+  if (!defined(id)) {
+    throw new DeveloperError("id is required.");
+  }
+  if (!defined(subRegion)) {
+    throw new DeveloperError("subRegion is required.");
+  }
   //>>includeEnd('debug');
 
-  this._imageTexture.addImageSubRegion(id, subRegion);
+  if (
+    this._imageId === id &&
+    BoundingRectangle.equals(this._imageSubRegion, subRegion)
+  ) {
+    return;
+  }
+
+  this._imageIndex = -1;
+  this._imageId = id;
+  this._imageSubRegion = BoundingRectangle.clone(subRegion);
+
+  if (defined(this._billboardCollection._textureAtlas)) {
+    this._loadImage();
+  }
 };
 
 Billboard.prototype._setTranslate = function (value) {
@@ -1517,12 +1571,13 @@ Billboard.prototype.equals = function (other) {
     (defined(other) &&
       this._id === other._id &&
       Cartesian3.equals(this._position, other._position) &&
-      this.image === other.image &&
+      this._imageId === other._imageId &&
       this._show === other._show &&
       this._scale === other._scale &&
       this._verticalOrigin === other._verticalOrigin &&
       this._horizontalOrigin === other._horizontalOrigin &&
       this._heightReference === other._heightReference &&
+      BoundingRectangle.equals(this._imageSubRegion, other._imageSubRegion) &&
       Color.equals(this._color, other._color) &&
       Cartesian2.equals(this._pixelOffset, other._pixelOffset) &&
       Cartesian2.equals(this._translate, other._translate) &&
